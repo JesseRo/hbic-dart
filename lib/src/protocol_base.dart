@@ -3,14 +3,14 @@ import 'dart:convert';
 // TODO: Put public facing types in this file.
 import 'dart:io';
 
+import 'package:dart_tracing_protocol/src/hbic_core.dart';
+
+import 'protocol_head.dart';
 import 'package:logging/logging.dart';
-/// Checks if you are awesome. Spoiler: you are.
 
 typedef void DataHandler(List<int> bytes);
 typedef void EventHandler();
 typedef void ErrorHandler();
-
-List<int> templateHead = [0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba];
 
 Logger log = new Logger("protocol base");
 
@@ -33,6 +33,7 @@ abstract class Protocol{
 
 class SocketProtocol extends Protocol{
   AbstractHBIC hbic;
+  List<int> buffer;
   SocketProtocol(this.hbic);
   @override
   onDataReceived(data) {
@@ -95,8 +96,8 @@ class ServerProtocol extends Protocol{
 
   @override
   onSocketMade(rawSocket/* type: RawSocket */) {
-    var hbic = new AbstractHBIC();
-    hbic.rawSocket = rawSocket;
+    var hbiServer = new HbiServer();
+    var hbic = new AbstractHBIC(hbiServer.factor(), rawSocket);
     SocketProtocol protocol = new SocketProtocol(hbic);
 
     var eventHandler = (event){
@@ -126,10 +127,17 @@ class ServerProtocol extends Protocol{
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-class AbstractHBIC {
-  RawSocket rawSocket;
+typedef ContextFactor();
 
-  void initServer({port: int, Protocol serverProtocol}) async{
+class HbiServer {
+  ContextFactor factor;
+
+  generateHead(){
+    return null;
+  }
+
+  void initServer({port: int, Protocol serverProtocol, factor: ContextFactor}) async{
+    this.factor = factor;
     if(serverProtocol == null){
       serverProtocol = new ServerProtocol();
     }
@@ -137,3 +145,4 @@ class AbstractHBIC {
     serverSocket.listen(serverProtocol.onSocketMade, onError: serverProtocol.onError, onDone: serverProtocol.onDone);
   }
 }
+
