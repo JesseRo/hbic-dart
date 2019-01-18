@@ -11,26 +11,25 @@ Logger log = new Logger("protocol buffer stream");
 class AbstractHBIC{
   RawSocket rawSocket;
   var context;
+  // mark if the sending pipeline is available
+  bool available;
   AbstractHBIC(this.context, this.rawSocket);
 
-  Queue<List<int>> buffers = new Queue();
   Queue<Completer<HbiMessage>> waiters = new Queue();
+  Queue<Completer<HbiMessage>> pipeline = new Queue();
   Queue<HbiMessage> products = new Queue();
 
-  HbiMessagePacket packet = new HbiMessagePacket();
+  HbiMessageProducer producer = new HbiMessageProducer();
 
   void comingBuffer(List<int> buffer){
-    buffers.addLast(buffer);
-    List<int> remain = packet.consume(buffer);
+    List<int> remain = producer.feed(buffer);
     if(remain == null){
       return;
     }else if(remain.length == 0){
-      products.addLast(wrap(packet));
-      packet = new HbiMessagePacket();
+      products.addLast(producer.produce());
     }else{
-      products.addLast(wrap(packet));
-      packet = new HbiMessagePacket();
-      packet.consume(remain);
+      products.addLast(producer.produce());
+      comingBuffer(remain);
     }
     while(products.length > 0){
       if(waiters.length > 0){
@@ -50,17 +49,19 @@ class AbstractHBIC{
     return future;
   }
 
-  HbiMessage wrap(HbiMessagePacket packet) async{
-    var file = new File('dd');
-
-
+  Future send(HbiMessage message) async {
+    Completer completer = new Completer();
+    Future future = completer.future;
+    pipeline.addLast(completer);
+    return future;
   }
-
-
-
 }
 
 class HbiMessage {
+  ProtocolHead head;
+  List<int> buffers;
+
+  HbiMessage(this.head, this.buffers);
 }
 
 class MessageConsumeStatus extends Mode{
@@ -81,15 +82,27 @@ class MessageConsumeStatus extends Mode{
 
 }
 
-class HbiMessagePacket{
-  var buffers = new List<List<int>>();
-  var expectedLength = 0;
-  var index = 0;
+class HbiMessageProducer{
+  var buffers;
+  var contentBuffer;
+  var expectedLength;
+  var index;
   ProtocolHead head;
+  MessageConsumeStatus status;
 
-  MessageConsumeStatus status = MessageConsumeStatus.EXPLORING;
+  void reset() {
+    this.buffers = <List<int>>[];
+    this.contentBuffer = new List<int>();
+    this.expectedLength = 0;
+    this.index = 0;
+    this.status = MessageConsumeStatus.EXPLORING;
+  }
 
-  List<int> consume(List<int> buffer){
+  HbiMessageProducer(){
+    reset();
+  }
+
+  List<int> feed(List<int> buffer){
     switch(status.value){
       case 0:
         index = buffer.indexOf(ProtocolHead.sign_beginning);
@@ -129,16 +142,18 @@ class HbiMessagePacket{
           expectedLength = head.length;
         }
         if(expectedLength < buffer.length){
-          buffers.add(buffer.sublist(0, expectedLength));
+          contentBuffer.addAll(buffer.sublist(0, expectedLength));
+          reset();
           // returning a non-empty list means the message body is full-filled
           // and returns the remaining buffer
           return buffer.sublist(expectedLength);
         }else if(expectedLength == buffer.length){
-          buffers.add(buffer);
+          contentBuffer.addAll(buffer);
+          reset();
           // returning empty list means the message body is perfectly full-filled
           return [];
         }else{
-          buffers.add(buffer);
+          contentBuffer.addAll(buffer);
           // returning null means the message body is not full-filled..
           return null;
         }
@@ -148,4 +163,7 @@ class HbiMessagePacket{
     }
   }
 
+  HbiMessage produce(){
+    return new HbiMessage(head, contentBuffer);
+  }
 }
