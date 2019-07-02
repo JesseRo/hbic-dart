@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:dart_tracing_protocol/src/hbic_common.dart';
-import 'package:dart_tracing_protocol/src/protocol_head.dart';
+import 'package:dart_tracing_protocol/src/protocol_base.dart';
+import 'package:dart_tracing_protocol/src/protocol_packet.dart';
 import 'package:logging/logging.dart';
 
 Logger log = new Logger("protocol buffer stream");
@@ -13,23 +16,55 @@ class AbstractHBIC{
   var context;
   // mark if the sending pipeline is available
   bool available;
-  AbstractHBIC(this.context, this.rawSocket);
-
+  AbstractHBIC(ContextFactor factor, RawSocket rawSocket){
+    this.context = factor();
+    bind(rawSocket);
+  }
+  // waiters wait until a full message is collected
   Queue<Completer<HbiMessage>> waiters = new Queue();
-  Queue<Completer<HbiMessage>> pipeline = new Queue();
+  // sending pipeline
+  Queue<WriteIntend> pipeline = new Queue<WriteIntend>();
+
   Queue<HbiMessage> products = new Queue();
 
   HbiMessageProducer producer = new HbiMessageProducer();
+
+
+
+  void bind(RawSocket rawSocket){
+    SocketProtocol protocol = new SocketProtocol(this);
+    rawSocket.writeEventsEnabled = false;
+    var eventHandler = (event){
+      switch(event){
+        case RawSocketEvent.READ:
+          var len = rawSocket.available();
+          if(len > 0){
+            log.shout(len);
+            var bytes = rawSocket.read(len);
+            protocol.onDataReceived(bytes);
+          }
+          break;
+        case RawSocketEvent.CLOSED:
+          protocol.onClosed();
+          break;
+        case RawSocketEvent.READ_CLOSED:
+          protocol.onReadClosed();
+          break;
+        case RawSocketEvent.WRITE:
+          protocol.onWrite();
+          break;
+      }
+    };
+    rawSocket.listen(eventHandler, onError: protocol.onReadClosed(), onDone: protocol.onDone());
+    this.rawSocket = rawSocket;
+  }
 
   void comingBuffer(List<int> buffer){
     List<int> remain = producer.feed(buffer);
     if(remain == null){
       return;
-    }else if(remain.length == 0){
-      products.addLast(producer.produce());
     }else{
       products.addLast(producer.produce());
-      comingBuffer(remain);
     }
     while(products.length > 0){
       if(waiters.length > 0){
@@ -38,7 +73,12 @@ class AbstractHBIC{
           throw 'future is already completed..';
         }
         waiter.complete(products.removeFirst());
+      }else{
+        break;
       }
+    }
+    if(remain.length > 0){
+      comingBuffer(remain);
     }
   }
 
@@ -49,20 +89,17 @@ class AbstractHBIC{
     return future;
   }
 
-  Future send(HbiMessage message) async {
+  Future<void> send(HbiMessage message) async {
     Completer completer = new Completer();
     Future future = completer.future;
-    pipeline.addLast(completer);
+
+    WriteIntend intend = new WriteIntend(message.buffers, completer);
+    pipeline.addLast(intend);
+    rawSocket.writeEventsEnabled = true;
     return future;
   }
 }
 
-class HbiMessage {
-  ProtocolHead head;
-  List<int> buffers;
-
-  HbiMessage(this.head, this.buffers);
-}
 
 class MessageConsumeStatus extends Mode{
   static const MessageConsumeStatus EXPLORING = const MessageConsumeStatus(0);
@@ -83,53 +120,60 @@ class MessageConsumeStatus extends Mode{
 }
 
 class HbiMessageProducer{
-  var buffers;
-  var contentBuffer;
-  var expectedLength;
-  var index;
+  Uint8List contentBuffer;
+  int expectedLength;
+  int chunkIndex;
+  int headIndex;
+  Uint8List headBuffer;
   ProtocolHead head;
   MessageConsumeStatus status;
 
   void reset() {
-    this.buffers = <List<int>>[];
-    this.contentBuffer = new List<int>();
+    this.contentBuffer = null;
     this.expectedLength = 0;
-    this.index = 0;
+    this.chunkIndex = 0;
+    this.headIndex = 0;
     this.status = MessageConsumeStatus.EXPLORING;
+    this.headBuffer = new Uint8List(ProtocolHead.headLong);
   }
 
   HbiMessageProducer(){
     reset();
   }
 
-  List<int> feed(List<int> buffer){
+  List<int> feed(List<int> chunk){
     switch(status.value){
       case 0:
-        index = buffer.indexOf(ProtocolHead.sign_beginning);
-        if(index >= 0){
+        chunkIndex = chunk.indexOf(ProtocolHead.sign_beginning);
+        if(chunkIndex >= 0){
           status = MessageConsumeStatus.MATCHINGHEAD;
-          expectedLength = index + ProtocolHead.headLong;
+          expectedLength = chunkIndex + ProtocolHead.headLong;
           continue MatchingHead;
         }
         return null;
       MatchingHead:
       case 1:
-        if(expectedLength > buffer.length){
-          expectedLength = expectedLength - buffer.length;
-          buffers.add(buffer);
-          index = 0;
+        if(expectedLength > chunk.length){
+          headBuffer.setRange(headIndex, headIndex + chunk.length - chunkIndex, chunk, chunkIndex);
+          headIndex = chunk.length - chunkIndex;
+          expectedLength = expectedLength - chunk.length;
+          chunkIndex = 0;
         }else{
-          if(buffer[expectedLength - 1] == ProtocolHead.sign_end){
-            var headBuffer = new List<int>();
-            for(List<int> bf in buffers){
-              headBuffer.addAll(bf);
-            }
-            headBuffer.addAll(buffer.sublist(index, expectedLength));
+          if(chunk[expectedLength - 1] == ProtocolHead.sign_end){
+            headBuffer.setRange(headIndex, 
+                headIndex + expectedLength, chunk, chunkIndex);
             head = new ProtocolHead.fromBuffer(headBuffer);
             status = MessageConsumeStatus.MATCHINGCONTENT;
-            buffers.clear();
-            if(expectedLength < buffer.length){
-              buffer = buffer.sublist(expectedLength);
+            contentBuffer = new Uint8List(head.length);
+            headIndex = 0;
+            if(expectedLength == chunk.length){
+              // head.length is the length(by bytes) of the message body
+              expectedLength = head.length;
+              return null;
+            }else {
+              chunkIndex = expectedLength;
+//              chunk = chunk.sublist(expectedLength);
+              expectedLength += head.length;
               continue MatchingContent;
             }
           }
@@ -137,23 +181,19 @@ class HbiMessageProducer{
         return null;
       MatchingContent:
       case 2:
-      // head.length is the length(by bytes) of the message body
-        if(expectedLength == 0){
-          expectedLength = head.length;
-        }
-        if(expectedLength < buffer.length){
-          contentBuffer.addAll(buffer.sublist(0, expectedLength));
-          reset();
+        if(expectedLength < chunk.length){
+          contentBuffer.setRange(headIndex, contentBuffer.lengthInBytes, chunk, chunkIndex);
           // returning a non-empty list means the message body is full-filled
           // and returns the remaining buffer
-          return buffer.sublist(expectedLength);
-        }else if(expectedLength == buffer.length){
-          contentBuffer.addAll(buffer);
-          reset();
+          return chunk.sublist(expectedLength);
+        }else if(expectedLength == chunk.length){
+          contentBuffer.setRange(headIndex, contentBuffer.lengthInBytes, chunk, chunkIndex);
           // returning empty list means the message body is perfectly full-filled
           return [];
         }else{
-          contentBuffer.addAll(buffer);
+          contentBuffer.setRange(headIndex, headIndex + chunk.length - chunkIndex, chunk, chunkIndex);
+          headIndex += chunk.length - chunkIndex;
+          chunkIndex = 0;
           // returning null means the message body is not full-filled..
           return null;
         }
@@ -164,6 +204,8 @@ class HbiMessageProducer{
   }
 
   HbiMessage produce(){
-    return new HbiMessage(head, contentBuffer);
+    HbiMessage message = new HbiMessage(head, contentBuffer);
+    reset();
+    return message;
   }
 }

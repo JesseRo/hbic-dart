@@ -1,12 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:dart_tracing_protocol/src/protocol_head.dart';
+import 'package:dart_tracing_protocol/src/hbic_core.dart';
+import 'package:dart_tracing_protocol/src/protocol_packet.dart';
 
 main() async {
-  var socket = await RawSocket.connect('127.0.0.1', 8888);
-  print(socket.runtimeType);
-  List<int> templateHead = new ProtocolHead(5).toBytes();
-  print(templateHead[0].bitLength);
-  socket.write(templateHead);
-  socket.write("hello".codeUnits);
+
+  var rawSocket = await RawSocket.connect("127.0.0.1", 8888);
+  AbstractHBIC hbic = new AbstractHBIC(()=>{}, rawSocket);
+  await hbic.send(new HbiMessage.fromString(json.encode({'a': 'sb', 'b': 'genius'})));
+  print("client send over.");
 }

@@ -16,7 +16,7 @@ List<int> intToBytes(int number){
   int length = (number.bitLength / 8).ceil();
   var bytes = new List(length);
   for(int i = 0; i < length; i++){
-    bytes[length] = (number >> (i * 8)) & 0xff;
+    bytes[i] = (number >> (i * 8)) & 0xff;
   }
   return bytes;
 }

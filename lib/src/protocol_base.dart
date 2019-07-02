@@ -1,11 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
+import 'dart:collection';
 // TODO: Put public facing types in this file.
 import 'dart:io';
 
 import 'package:dart_tracing_protocol/src/hbic_core.dart';
 
-import 'protocol_head.dart';
+import 'protocol_packet.dart';
 import 'package:logging/logging.dart';
 
 typedef void DataHandler(List<int> bytes);
@@ -33,13 +33,39 @@ abstract class Protocol{
 
 class SocketProtocol extends Protocol{
   AbstractHBIC hbic;
-  List<int> buffer;
+  int offset = 0;
+  WriteIntend intend = null;
+
   SocketProtocol(this.hbic);
   @override
   onDataReceived(data) {
     log.fine('socket on dataReceived.');
     log.shout(data);
-    return null;
+    hbic.comingBuffer(data);
+  }
+
+  @override
+  onWrite() {
+    log.fine('socket on write.');
+    if (intend == null) {
+      if (hbic.pipeline.length == 0) {
+        log.severe('no data to write.');
+        return;
+      } else {
+        intend = hbic.pipeline.removeFirst();
+      }
+    }
+
+    offset += hbic.rawSocket.write(intend.buffer, offset, intend.buffer.length - offset);
+    if (offset < intend.buffer.length){
+      hbic.rawSocket.writeEventsEnabled = true;
+    }
+    if(offset == intend.buffer.length){
+      intend.completer.complete();
+      offset = 0;
+      intend = null;
+      log.fine('one message send succeed.');
+    }
   }
 
   @override
@@ -61,11 +87,6 @@ class SocketProtocol extends Protocol{
   }
 
   @override
-  onWrite() {
-    log.fine('socket on write.');
-  }
-
-  @override
   onDone() {
     log.fine('socket on done.');
   }
@@ -73,10 +94,19 @@ class SocketProtocol extends Protocol{
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+class WriteIntend{
+  List<int> buffer ;
+  Completer completer;
+
+  WriteIntend(this.buffer, this.completer);
+}
+
 class ServerProtocol extends Protocol{
 
+  HbiServer hbiServer;
   Logger logger = new Logger("protocol base");
-  
+  ServerProtocol(this.hbiServer);
+
   @override
   onError(error) {
     // some error occurs...
@@ -96,32 +126,7 @@ class ServerProtocol extends Protocol{
 
   @override
   onSocketMade(rawSocket/* type: RawSocket */) {
-    var hbiServer = new HbiServer();
-    var hbic = new AbstractHBIC(hbiServer.factor(), rawSocket);
-    SocketProtocol protocol = new SocketProtocol(hbic);
-
-    var eventHandler = (event){
-      switch(event){
-        case RawSocketEvent.READ:
-          var len = rawSocket.available();
-          if(len > 0){
-            log.shout(len);
-            var bytes = rawSocket.read(len);
-            protocol.onDataReceived(bytes);
-          }
-          break;
-        case RawSocketEvent.CLOSED:
-          protocol.onClosed();
-          break;
-        case RawSocketEvent.READ_CLOSED:
-          protocol.onReadClosed();
-          break;
-        case RawSocketEvent.WRITE:
-          protocol.onWrite();
-          break;
-      }
-    };
-    rawSocket.listen(eventHandler, onError: protocol.onReadClosed(), onDone: protocol.onDone());
+    var hbic = new AbstractHBIC(hbiServer.factor, rawSocket);
   }
 
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
@@ -132,17 +137,16 @@ typedef ContextFactor();
 class HbiServer {
   ContextFactor factor;
 
-  generateHead(){
-    return null;
-  }
-
-  void initServer({port: int, Protocol serverProtocol, factor: ContextFactor}) async{
+  Future<StreamSubscription<RawSocket>> initServer({port: int, Protocol serverProtocol, ContextFactor factor}) async{
     this.factor = factor;
+    if(factor == null){
+      this.factor = ()=>{};
+    }
     if(serverProtocol == null){
-      serverProtocol = new ServerProtocol();
+      serverProtocol = new ServerProtocol(this);
     }
     RawServerSocket serverSocket = await RawServerSocket.bind(InternetAddress.ANY_IP_V4, port);
-    serverSocket.listen(serverProtocol.onSocketMade, onError: serverProtocol.onError, onDone: serverProtocol.onDone);
+    return serverSocket.listen(serverProtocol.onSocketMade, onError: serverProtocol.onError, onDone: serverProtocol.onDone);
   }
 }
 
