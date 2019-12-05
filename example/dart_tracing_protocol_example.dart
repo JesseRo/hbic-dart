@@ -10,8 +10,10 @@ class MyProtocol extends ServerProtocol{
   @override
   onSocketMade(rawSocket/* type: RawSocket */) async {
     var hbic = new AbstractHBIC(hbiServer.factor, rawSocket);
-    var message = await hbic.fetch();
-    log.shout(message.toString());
+    while(true){
+      var message = await hbic.fetch();
+      log.shout(message.toString());
+    }
   }
 }
 

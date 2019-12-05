@@ -42,13 +42,16 @@ class ProtocolHead{
 
   int timestamp;
 
-  ProtocolHead.fromBuffer(List<int> buffer){
-    this.head = new Uint8List(headLong);
-    this.head.setAll(chunkIndex, iterable)
+  ProtocolHead.fromBuffer(Uint8List buffer){
+//    this.head = new Uint8List(headLong);
+//    this.head.setAll(0, buffer);
+    this.head = buffer;
+    final bytedata = buffer.buffer.asByteData(0, 14);
     check();
-    mode = head[9] == 0 ? ProtocolMode.EMIT : ProtocolMode.SUB_SESSION;
-    length = bytesToInt(head.sublist(6, 14));
-    timestamp = bytesToInt(head.sublist(1, 5));
+
+    mode = bytedata.getInt8(9) == 0 ? ProtocolMode.EMIT : ProtocolMode.SUB_SESSION;
+    timestamp = bytedata.getInt64(1);
+    length = bytedata.getInt32(10);
   }
 
   ProtocolHead(int length, {int timestamp, ProtocolMode mode}){
@@ -76,7 +79,8 @@ class ProtocolHead{
     bytedata.setInt64(1, timestamp);
     bytedata.setInt8(9, mode.value);
     bytedata.setInt32(10, length);
-    bytes.setRange(14, headLong, new List<int>.filled(20, 0));
+//    bytes.setRange(14, headLong, new List<int>.filled(20, 0));
+//    bytedata.setInt8(34, sign_end);
     bytes[34] = sign_end;
     return bytes;
   }

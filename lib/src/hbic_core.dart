@@ -36,7 +36,7 @@ class AbstractHBIC{
     rawSocket.writeEventsEnabled = false;
     var eventHandler = (event){
       switch(event){
-        case RawSocketEvent.READ:
+        case RawSocketEvent.read:
           var len = rawSocket.available();
           if(len > 0){
             log.shout(len);
@@ -44,13 +44,13 @@ class AbstractHBIC{
             protocol.onDataReceived(bytes);
           }
           break;
-        case RawSocketEvent.CLOSED:
+        case RawSocketEvent.closed:
           protocol.onClosed();
           break;
-        case RawSocketEvent.READ_CLOSED:
+        case RawSocketEvent.readClosed:
           protocol.onReadClosed();
           break;
-        case RawSocketEvent.WRITE:
+        case RawSocketEvent.write:
           protocol.onWrite();
           break;
       }
